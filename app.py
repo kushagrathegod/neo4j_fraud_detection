@@ -131,12 +131,19 @@ def process_transaction(tx, data):
     WITH s, device_count, last_10min_txn,
          count(DISTINCT mid) AS chain_count
 
+    // SMALL TXN COUNT — sender's outgoing transactions under $10,000
+    // Matches training data: computed as outgoing small txns per sender account
+    OPTIONAL MATCH (s)-[:SENT]->(small_t:Transaction)
+    WHERE small_t.amount < 10000
+    WITH s, device_count, last_10min_txn, chain_count,
+         count(small_t) AS small_txn_count
+
     // GRAPH FLOW
     OPTIONAL MATCH path =
         (s)-[:SENT]->(t1:Transaction)-[:TO]->(a2:Account)
         -[:SENT]->(t2:Transaction)-[:TO]->(a3:Account)
 
-    WITH s, device_count, last_10min_txn, chain_count,
+    WITH s, device_count, last_10min_txn, chain_count, small_txn_count,
          collect(DISTINCT s) + collect(DISTINCT a2) + collect(DISTINCT a3) AS nodes,
          collect(DISTINCT {
              source: s.account_id,
@@ -154,6 +161,7 @@ def process_transaction(tx, data):
            coalesce(s.incoming_count, 0) AS incoming,
            device_count,
            last_10min_txn,
+           small_txn_count,
            chain_count,
            nodes,
            edges
@@ -181,13 +189,15 @@ def check_transaction(data: Transaction):
     if result is None:
         return {"error": "Processing failed"}
 
-    # ML FEATURES
+    # ML FEATURES — column order must match training data exactly:
+    # txn_count → incoming → device_count → last_10min_txn → small_txn_count → chain_count
     feature_df = pd.DataFrame([{
-        "txn_count":      result["txn_count"],
-        "incoming":       result["incoming"],
-        "device_count":   result["device_count"],
-        "last_10min_txn": result["last_10min_txn"],
-        "chain_count":    result["chain_count"]
+        "txn_count":       result["txn_count"],
+        "incoming":        result["incoming"],
+        "device_count":    result["device_count"],
+        "last_10min_txn":  result["last_10min_txn"],
+        "small_txn_count": result["small_txn_count"],
+        "chain_count":     result["chain_count"]
     }])
 
     # Booster.predict returns probabilities directly for binary classification —
@@ -207,6 +217,9 @@ def check_transaction(data: Transaction):
 
     if result["last_10min_txn"] > 5:
         patterns.append("HIGH_VELOCITY")
+
+    if result["small_txn_count"] > 5:
+        patterns.append("SMALL_TXN_STRUCTURING")
 
     # FINAL SCORE
     rule_score = (
