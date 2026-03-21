@@ -7,7 +7,9 @@ import os
 import pandas as pd
 from contextlib import asynccontextmanager
 import xgboost as xgb
-from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from fastapi.responses import Response
 
 # ==============================
 # LOAD ENV
@@ -45,13 +47,33 @@ async def lifespan(app: FastAPI):
     driver.close()
 
 app = FastAPI(lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+# ==============================
+# CORS — manual middleware
+# CORSMiddleware headers were being stripped by Cloudflare.
+# BaseHTTPMiddleware injects headers inside uvicorn directly,
+# so they survive the Cloudflare proxy layer.
+# ==============================
+class CORSMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.method == "OPTIONS":
+            return Response(
+                status_code=200,
+                headers={
+                    "Access-Control-Allow-Origin":  "*",
+                    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+                    "Access-Control-Allow-Headers": "*",
+                    "Access-Control-Max-Age":       "86400",
+                }
+            )
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Origin"]  = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        return response
+
+app.add_middleware(CORSMiddleware)
+
 # ==============================
 # REQUEST MODEL
 # ==============================
@@ -161,11 +183,11 @@ def check_transaction(data: Transaction):
 
     # ML FEATURES
     feature_df = pd.DataFrame([{
-        "txn_count": result["txn_count"],
-        "incoming": result["incoming"],
-        "device_count": result["device_count"],
+        "txn_count":      result["txn_count"],
+        "incoming":       result["incoming"],
+        "device_count":   result["device_count"],
         "last_10min_txn": result["last_10min_txn"],
-        "chain_count": result["chain_count"]
+        "chain_count":    result["chain_count"]
     }])
 
     # Booster.predict returns probabilities directly for binary classification —
@@ -221,10 +243,10 @@ def check_transaction(data: Transaction):
     ]
 
     return {
-        "account": result["account"],
-        "decision": decision,
-        "confidence": round(ml_prob, 3),
-        "final_score": round(final_score, 3),
+        "account":           result["account"],
+        "decision":          decision,
+        "confidence":        round(ml_prob, 3),
+        "final_score":       round(final_score, 3),
         "patterns_detected": patterns,
         "graph": {
             "nodes": nodes,
