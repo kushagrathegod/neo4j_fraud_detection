@@ -312,17 +312,14 @@ async def analyze_dataset(file: UploadFile = File(...)):
 @app.get("/detect-fraud-network", dependencies=[Depends(require_api_key)])
 def detect_fraud_network():
 
-    # Only match direct transactions BETWEEN suspicious accounts —
-    # not their entire neighbourhood. Prevents full-graph dumps.
+    # Start from actual transactions between suspicious accounts —
+    # avoids the N×N cartesian product of the double UNWIND approach.
+    # Scales with number of fraud edges, not the square of suspect count.
     query = """
-    MATCH (s:Account)
-    WHERE s.txn_count > 20 OR s.incoming_count > 15
-    WITH collect(s) AS suspects
-
-    UNWIND suspects AS s
-    UNWIND suspects AS r
-    MATCH (s)-[:SENT]->(:Transaction)-[:TO]->(r)
-    WHERE s <> r
+    MATCH (s:Account)-[:SENT]->(:Transaction)-[:TO]->(r:Account)
+    WHERE (s.txn_count > 20 OR s.incoming_count > 15)
+      AND (r.txn_count > 20 OR r.incoming_count > 15)
+      AND s <> r
 
     WITH collect(DISTINCT s) + collect(DISTINCT r) AS nodes,
          collect(DISTINCT {
@@ -373,28 +370,39 @@ def detect_fraud_network():
 def detect_pattern(pattern_type: str):
 
     if pattern_type == "circular":
-        # Money loops back to the originating account via 2 hops
+        # Returns account IDs instead of raw path objects —
+        # path objects serialise as [object Object] in the frontend
         query = """
-        MATCH path = (a:Account)-[:SENT]->(:Transaction)-[:TO]->(b:Account)
-                     -[:SENT]->(:Transaction)-[:TO]->(c:Account)
-                     -[:SENT]->(:Transaction)-[:TO]->(a)
-        RETURN path LIMIT 5
+        MATCH (a:Account)-[:SENT]->(:Transaction)-[:TO]->(b:Account)
+              -[:SENT]->(:Transaction)-[:TO]->(c:Account)
+              -[:SENT]->(:Transaction)-[:TO]->(a)
+        RETURN a.account_id AS account_a,
+               b.account_id AS account_b,
+               c.account_id AS account_c
+        LIMIT 5
         """
 
     elif pattern_type == "chain":
-        # Linear A → B → C → D transaction chain
+        # Returns account IDs instead of raw path objects
         query = """
-        MATCH path = (a:Account)-[:SENT]->(:Transaction)-[:TO]->(b:Account)
-                     -[:SENT]->(:Transaction)-[:TO]->(c:Account)
-                     -[:SENT]->(:Transaction)-[:TO]->(d:Account)
-        RETURN path LIMIT 5
+        MATCH (a:Account)-[:SENT]->(:Transaction)-[:TO]->(b:Account)
+              -[:SENT]->(:Transaction)-[:TO]->(c:Account)
+              -[:SENT]->(:Transaction)-[:TO]->(d:Account)
+        RETURN a.account_id AS account_a,
+               b.account_id AS account_b,
+               c.account_id AS account_c,
+               d.account_id AS account_d
+        LIMIT 5
         """
 
     elif pattern_type == "velocity":
-        # Accounts sending more than 5 transactions in the last 10 minutes
+        # Uses latest transaction timestamp as reference instead of datetime() —
+        # prevents empty results when dataset contains historical data
         query = """
         MATCH (s:Account)-[:SENT]->(t:Transaction)
-        WHERE t.timestamp > datetime() - duration('PT10M')
+        WITH max(t.timestamp) AS latest
+        MATCH (s:Account)-[:SENT]->(t:Transaction)
+        WHERE t.timestamp > latest - duration('PT10M')
         WITH s, count(t) AS txn_count
         WHERE txn_count > 5
         RETURN s.account_id AS account, txn_count
