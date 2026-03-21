@@ -7,6 +7,7 @@ import os
 import pandas as pd
 from contextlib import asynccontextmanager
 import xgboost as xgb
+from fastapi.middleware.cors import CORSMiddleware
 
 # ==============================
 # LOAD ENV
@@ -44,7 +45,13 @@ async def lifespan(app: FastAPI):
     driver.close()
 
 app = FastAPI(lifespan=lifespan)
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 # ==============================
 # REQUEST MODEL
 # ==============================
