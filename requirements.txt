@@ -3,8 +3,8 @@ uvicorn
 neo4j
 python-dotenv
 pydantic
-joblib
 xgboost
 scikit-learn
 numpy
 pandas
+python-multipart

@@ -3,10 +3,10 @@ from neo4j import GraphDatabase
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from datetime import datetime
-import joblib
 import os
 import pandas as pd
 from contextlib import asynccontextmanager
+import xgboost as xgb
 
 # ==============================
 # LOAD ENV
@@ -29,8 +29,11 @@ driver = GraphDatabase.driver(
 
 # ==============================
 # LOAD ML MODEL
+# Booster.load_model uses XGBoost native format (.ubj) —
+# version-stable, faster than pickle, no deprecation warnings.
 # ==============================
-model = joblib.load("fraud_model.pkl")
+booster = xgb.Booster()
+booster.load_model("fraud_model.ubj")
 
 # ==============================
 # FASTAPI LIFESPAN
@@ -158,7 +161,10 @@ def check_transaction(data: Transaction):
         "chain_count": result["chain_count"]
     }])
 
-    ml_prob = float(model.predict_proba(feature_df)[0][1])
+    # Booster.predict returns probabilities directly for binary classification —
+    # no predict_proba wrapper needed, no sklearn fit state required.
+    dmatrix = xgb.DMatrix(feature_df)
+    ml_prob = float(booster.predict(dmatrix)[0])
 
     # PATTERNS
     # HUB_RELAY: sender both sends and receives heavily — indicates a layering/relay node,
